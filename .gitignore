@@ -1,0 +1,4 @@
+# Project exclude paths
+/out/
+/src/dao.properties
+/src/edu/javacourse/studentorder/config/Config.java
