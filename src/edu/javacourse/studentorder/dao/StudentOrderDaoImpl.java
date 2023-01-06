@@ -8,6 +8,8 @@ import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class StudentOrderDaoImpl implements StudentOrderDao {
 
@@ -21,14 +23,20 @@ public class StudentOrderDaoImpl implements StudentOrderDao {
 
     private static final String SELECT_ORDER =
             "SELECT so.*, ro.r_office_area_id, ro.r_office_name, " +
-            "po_h.p_office_area_id h_p_office_area, po_h.p_office_name h_p_office_name, " +
-            "po_w.p_office_area_id w_p_office_area, po_h.p_office_name w_p_office_name " +
-            "FROM jc_student_order so " +
-            "INNER JOIN jc_register_office ro ON ro.r_office_id = so.register_office_id " +
-            "INNER JOIN jc_passport_office po_h ON po_h.p_office_id = so.h_passport_office_id " +
-            "INNER JOIN jc_passport_office po_w ON po_w.p_office_id = so.w_passport_office_id " +
-            "WHERE student_order_status = 0 " +
-            "ORDER BY student_order_date";
+                    "po_h.p_office_area_id h_p_office_area, po_h.p_office_name h_p_office_name, " +
+                    "po_w.p_office_area_id w_p_office_area, po_h.p_office_name w_p_office_name " +
+                    "FROM jc_student_order so " +
+                    "INNER JOIN jc_register_office ro ON ro.r_office_id = so.register_office_id " +
+                    "INNER JOIN jc_passport_office po_h ON po_h.p_office_id = so.h_passport_office_id " +
+                    "INNER JOIN jc_passport_office po_w ON po_w.p_office_id = so.w_passport_office_id " +
+                    "WHERE student_order_status = ? " +
+                    "ORDER BY student_order_date";
+
+    private static final String SELECT_CHILD =
+            "SELECT soc.*, ro.r_office_area_id, ro.r_office_name " +
+                    "FROM jc_student_child soc " +
+                    "INNER JOIN jc_register_office ro ON ro.r_office_id = soc.c_register_office_id  " +
+                    "WHERE soc.student_order_id IN ";
 
 
     //TODO refactoring - make one method.
@@ -131,14 +139,14 @@ public class StudentOrderDaoImpl implements StudentOrderDao {
 
     @Override
     public List<StudentOrder> getStudentOrders() throws DaoException {
-       List<StudentOrder> result = new LinkedList<>();
+        List<StudentOrder> result = new LinkedList<>();
         try (Connection con = getConnection()) {
-
             con.setAutoCommit(false);
             PreparedStatement stmnt = con.prepareStatement(SELECT_ORDER);
+            stmnt.setInt(1, StudentOrderStatus.START.ordinal());
             ResultSet rs = stmnt.executeQuery();
 
-            while (rs.next()){
+            while (rs.next()) {
                 StudentOrder so = new StudentOrder();
                 fillStudentOrder(rs, so);
                 fillMarriage(rs, so);
@@ -149,41 +157,84 @@ public class StudentOrderDaoImpl implements StudentOrderDao {
                 result.add(so);
             }
 
+            findChildren(con, result);
             rs.close();
 
-        }catch (SQLException e){
-        throw new DaoException(e);
+        } catch (SQLException e) {
+            throw new DaoException(e);
         }
 
         return result;
     }
 
+    private void findChildren(Connection con, List<StudentOrder> result) throws SQLException {
+        String cl = "(" + result.stream().map(so -> String.valueOf(so.getStudentOrderId()))
+                .collect(Collectors.joining(",")) + ")";
+
+        Map<Long, StudentOrder> soMap = result.stream().collect(Collectors
+                .toMap(so -> so.getStudentOrderId(), so -> so));
+
+        try (PreparedStatement statement = con.prepareStatement(SELECT_CHILD + cl)) {
+            ResultSet rs = statement.executeQuery();
+            while (rs.next()) {
+                StudentOrder so = soMap.get(rs.getLong("student_order_id"));
+                Child child = fillChild(rs);
+                so.addChild(child);
+            }
+        }
+    }
+
+    private Child fillChild(ResultSet rs) throws SQLException {
+        Child child = new Child();
+        child.setCertificateNumber(rs.getString("c_certificate_number"));
+        child.setSurname(rs.getString("c_sur_name"));
+        child.setGivenName(rs.getString("c_given_name"));
+        child.setPatronymic(rs.getString("c_patronymic"));
+        child.setDateOfBirthday(rs.getDate("c_date_of_birth").toLocalDate());
+        RegisterOffice ro = new RegisterOffice();
+        ro.setOfficeAreaId(rs.getString("r_office_area_id"));
+        ro.setOfficeName(rs.getString("r_office_name"));
+        ro.setOfficeId(rs.getLong("c_register_office_id"));
+        child.setIssueDepartment(ro);
+        child.setIssueDate(rs.getDate("c_certificate_date").toLocalDate());
+        String postCode = rs.getString("c_post_index");
+        Long streetCode = rs.getLong("c_street_code");
+        String building = rs.getString("c_building");
+        String extension = rs.getString("c_extension");
+        String apartment = rs.getString("c_apartment");
+        Street street = new Street();
+        street.setStreet_code(streetCode);
+        Address address = new Address(postCode, street, building, extension, apartment);
+        child.setAddress(address);
+        return child;
+    }
+
     private Adult fillAdult(ResultSet rs, String pref) throws SQLException {
         Adult adult = new Adult();
-        adult.setSurname(rs.getString(pref+"sur_name"));
-        adult.setGivenName(rs.getString(pref+"given_name"));
-        adult.setPatronymic(rs.getString(pref+"patronymic"));
-        adult.setDateOfBirthday(rs.getDate(pref+"date_of_birth").toLocalDate());
-        adult.setPassportSeria(rs.getString(pref+"passport_seria"));
-        adult.setPassportNumber(rs.getString(pref+"passport_number"));
-        adult.setIssueDate(rs.getDate(pref+"passport_date").toLocalDate());
+        adult.setSurname(rs.getString(pref + "sur_name"));
+        adult.setGivenName(rs.getString(pref + "given_name"));
+        adult.setPatronymic(rs.getString(pref + "patronymic"));
+        adult.setDateOfBirthday(rs.getDate(pref + "date_of_birth").toLocalDate());
+        adult.setPassportSeria(rs.getString(pref + "passport_seria"));
+        adult.setPassportNumber(rs.getString(pref + "passport_number"));
+        adult.setIssueDate(rs.getDate(pref + "passport_date").toLocalDate());
         PassportOffice issueDepartment = new PassportOffice();
-        issueDepartment.setOfficeId(rs.getLong(pref+"passport_office_id"));
-        issueDepartment.setOfficeName(rs.getString(pref+"p_office_name"));
-        issueDepartment.setOfficeAreaId(rs.getString(pref+"p_office_area"));
+        issueDepartment.setOfficeId(rs.getLong(pref + "passport_office_id"));
+        issueDepartment.setOfficeName(rs.getString(pref + "p_office_name"));
+        issueDepartment.setOfficeAreaId(rs.getString(pref + "p_office_area"));
         adult.setIssueDepartment(issueDepartment);
-        String postCode = rs.getString(pref+"post_index");
-        Long streetCode = rs.getLong(pref+"street_code");
-        String building = rs.getString(pref+"building");
-        String extension = rs.getString(pref+"extension");
-        String apartment = rs.getString(pref+"apartment");
+        String postCode = rs.getString(pref + "post_index");
+        Long streetCode = rs.getLong(pref + "street_code");
+        String building = rs.getString(pref + "building");
+        String extension = rs.getString(pref + "extension");
+        String apartment = rs.getString(pref + "apartment");
         Street street = new Street();
         street.setStreet_code(streetCode);
         Address address = new Address(postCode, street, building, extension, apartment);
         adult.setAddress(address);
-        University university = new University(rs.getLong(pref+"university_id"), "");
+        University university = new University(rs.getLong(pref + "university_id"), "");
         adult.setUniversity(university);
-        adult.setStudentId(rs.getString(pref+"student_number"));
+        adult.setStudentId(rs.getString(pref + "student_number"));
         return adult;
     }
 
